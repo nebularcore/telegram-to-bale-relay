@@ -1,10 +1,6 @@
-{
-  "name": "telegram-to-bale-relay",
-  "version": "1.1.0",
-  "dependencies": {
-    "jszip": "^3.10.1"
-  },
-  "devDependencies": {
-    "wrangler": "^3.114.17"
-  }
-}
+name = "telegram-to-bale-relay"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# مقادیر حساس را در پنل کلودفلر ست کنید
