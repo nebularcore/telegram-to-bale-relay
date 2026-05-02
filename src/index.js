@@ -1,17 +1,15 @@
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") return new Response("OK");
-
     try {
       const update = await request.json();
-      
       if (update.message) {
         await handleIncoming(update.message, env);
       } else if (update.callback_query) {
         await handleCallback(update.callback_query, env);
       }
     } catch (err) {
-      console.error("Worker Error:", err.message);
+      console.error("Error:", err.message);
     }
     return new Response("OK");
   }
@@ -19,22 +17,20 @@ export default {
 
 async function handleIncoming(message, env) {
   if (String(message.from.id) !== String(env.ALLOWED_USER_ID)) return;
-
   const keyboard = {
     inline_keyboard: [
-      [{ text: "📤 ارسال سانسور شده (عادی)", callback_data: "mode_safe" }],
+      [{ text: "📤 ارسال عادی (سانسور شده)", callback_data: "mode_safe" }],
       [{ text: "🔇 ارسال بدون متن", callback_data: "mode_silent" }],
       [{ text: "🔒 پنهان‌سازی (تغییر فرمت)", callback_data: "mode_hide" }],
       [{ text: "❌ لغو", callback_data: "mode_cancel" }]
     ]
   };
-
   await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: message.chat.id,
-      text: "🛡 **مدیریت انتقال محتوا**\n\nنوع ارسال به بله را انتخاب کنید. لینک‌ها و آیدی‌ها به‌صورت خودکار حذف می‌شوند.",
+      text: "🤖 **مدیریت انتقال محتوا**\nنوع ارسال را انتخاب کنید:",
       reply_to_message_id: message.message_id,
       reply_markup: keyboard,
       parse_mode: "Markdown"
@@ -44,39 +40,32 @@ async function handleIncoming(message, env) {
 
 async function handleCallback(cb, env) {
   if (String(cb.from.id) !== String(env.ALLOWED_USER_ID)) return;
-
   const action = cb.data;
   const originalMsg = cb.message.reply_to_message;
   const chatId = cb.message.chat.id;
-  const messageId = cb.message.id || cb.message.message_id;
+  const messageId = cb.message.message_id;
 
   if (action === "mode_cancel") {
     await editStatus(env, chatId, messageId, "❌ لغو شد.");
     return;
   }
 
-  await editStatus(env, chatId, messageId, "⏳ در حال پردازش و ارسال...");
+  await editStatus(env, chatId, messageId, "⏳ در حال ارسال به بله...");
 
   try {
     let text = originalMsg.text || originalMsg.caption || "";
     let safeText = action === "mode_silent" ? "" : sanitize(text);
-    
     const file = getFile(originalMsg);
 
     if (!file) {
-      // اگر فقط متن بود
-      await sendBale(env, "sendMessage", { text: safeText });
+      await sendBale(env, "sendMessage", { text: safeText || "پیام بدون متن" });
     } else {
       const fileUrl = await getFileUrl(env, file.id);
-
       if (action === "mode_hide") {
-        // تغییر فرمت برای عبور از فیلتر (به جای زیپ سنگین)
-        const response = await fetch(fileUrl);
-        const blob = await response.blob();
-        const fakeName = `File_${Date.now()}.pdf.enc`; // پسوند جعلی برای امنیت
-        await uploadBale(env, blob, fakeName, safeText + "\n\n🔐 محتوای تغییر فرمت یافته");
+        const res = await fetch(fileUrl);
+        const blob = await res.blob();
+        await uploadBale(env, blob, `Secure_${Date.now()}.pdf.enc`, safeText + "\n\n🔐 فایل تغییر فرمت یافته");
       } else {
-        // ارسال مستقیم
         const method = file.type === "photo" ? "sendPhoto" : file.type === "video" ? "sendVideo" : "sendDocument";
         await sendBale(env, method, { [file.type]: fileUrl, caption: safeText });
       }
@@ -87,9 +76,8 @@ async function handleCallback(cb, env) {
   }
 }
 
-// توابع کمکی
 function sanitize(t) {
-  return t.replace(/@[a-zA-Z0-9_]+/g, "").replace(/(https?:\/\/)?t\.me\/[a-zA-Z0-9_]+/ig, "").trim();
+  return t.replace(/@[a-zA-Z0-9_]+/g, "[ID]").replace(/(https?:\/\/)?t\.me\/[a-zA-Z0-9_]+/ig, "[Link]").trim();
 }
 
 function getFile(m) {
