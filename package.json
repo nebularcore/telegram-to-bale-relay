@@ -1,10 +1,7 @@
 {
   "name": "telegram-to-bale-relay",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "devDependencies": {
     "wrangler": "^3.0.0"
-  },
-  "scripts": {
-    "deploy": "wrangler deploy"
   }
 }
