@@ -31,7 +31,7 @@ async function handleIncoming(message, env) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: message.chat.id,
-      text: "🛡 **مدیریت انتقال محتوا**\nنوع ارسال را انتخاب کنید. در هر دو حالت آیدی‌ها و لینک‌ها حذف می‌شوند.",
+      text: "🛡 **مدیریت انتقال محتوا**\nنوع ارسال را انتخاب کنید. آیدی‌ها و لینک‌ها حذف می‌شوند.",
       reply_to_message_id: message.message_id,
       reply_markup: keyboard
     })
@@ -47,7 +47,7 @@ async function handleCallback(cb, env) {
   const messageId = cb.message.message_id;
 
   if (action === "mode_cancel") {
-    await editStatus(env, chatId, messageId, "❌ عملیات لغو شد.");
+    await editStatus(env, chatId, messageId, "❌ لغو شد.");
     return;
   }
 
@@ -55,24 +55,23 @@ async function handleCallback(cb, env) {
 
   try {
     let rawText = originalMsg.text || originalMsg.caption || "";
-    // حذف دقیق آیدی‌ها و لینک‌های تلگرامی
     let safeText = rawText.replace(/@[a-zA-Z0-9_]+/g, "").replace(/(https?:\/\/)?t\.me\/[a-zA-Z0-9_]+/ig, "").trim();
     
     const file = getFile(originalMsg);
 
     if (!file) {
-      await sendBale(env, "sendMessage", { text: safeText || "پیام بدون متن" });
+      // استفاده از تابع اصلاح شده
+      await sendToBale(env, "sendMessage", { text: safeText || "پیام بدون متن" });
     } else {
       const tgFileRes = await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/getFile?file_id=${file.id}`);
       const tgFileData = await tgFileRes.json();
       const fileUrl = `https://api.telegram.org/file/bot${env.TG_TOKEN}/${tgFileData.result.file_path}`;
 
       if (action === "mode_hide") {
-        // متد پنهان‌سازی بدون نیاز به کتابخانه زیپ
         const fileRes = await fetch(fileUrl);
         const blob = await fileRes.blob();
         const fakeName = `Secure_File_${Date.now()}.pdf.enc`; 
-        await uploadBale(env, blob, fakeName, safeText + "\n\n🔐 محتوای تغییر فرمت یافته (امن)");
+        await uploadToBale(env, blob, fakeName, safeText + "\n\n🔐 محتوای تغییر فرمت یافته (امن)");
       } else {
         const method = file.type === "photo" ? "sendPhoto" : file.type === "video" ? "sendVideo" : "sendDocument";
         await sendToBale(env, method, { [file.type]: fileUrl, caption: safeText });
@@ -99,6 +98,7 @@ async function editStatus(env, cId, mId, txt) {
   });
 }
 
+// نام تابع را یکسان کردیم: sendToBale
 async function sendToBale(env, method, payload) {
   await fetch(`https://tapi.bale.ai/bot${env.BALE_TOKEN}/${method}`, {
     method: "POST",
@@ -107,7 +107,7 @@ async function sendToBale(env, method, payload) {
   });
 }
 
-async function uploadBale(env, blob, name, cap) {
+async function uploadToBale(env, blob, name, cap) {
   const fd = new FormData();
   fd.append("chat_id", env.BALE_CHAT_ID);
   fd.append("document", blob, name);
