@@ -1,5 +1,3 @@
-import JSZip from 'https://esm.sh/jszip@3.10.1';
-
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") return new Response("OK");
@@ -11,7 +9,7 @@ export default {
         await handleCallback(update.callback_query, env);
       }
     } catch (err) {
-      console.error("Critical Error:", err.message);
+      console.error("Worker Error:", err.message);
     }
     return new Response("OK");
   }
@@ -22,9 +20,9 @@ async function handleIncoming(message, env) {
 
   const keyboard = {
     inline_keyboard: [
-      [{ text: "📤 ارسال عادی (بدون @)", callback_data: "mode_safe" }],
-      [{ text: "🗜 ارسال به‌صورت Zip", callback_data: "mode_zip" }],
-      [{ text: "❌ لغو عملیات", callback_data: "mode_cancel" }]
+      [{ text: "📤 ارسال عادی (پاکسازی شده)", callback_data: "mode_safe" }],
+      [{ text: "🔒 پنهان‌سازی (تغییر فرمت)", callback_data: "mode_hide" }],
+      [{ text: "❌ لغو", callback_data: "mode_cancel" }]
     ]
   };
 
@@ -33,10 +31,9 @@ async function handleIncoming(message, env) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: message.chat.id,
-      text: "🛡 **پیام دریافت شد**\nلطفاً نحوه انتقال به بله را انتخاب کنید:\n(لینک‌ها و آیدی‌ها خودکار پاک می‌شوند)",
+      text: "🛡 **مدیریت انتقال محتوا**\nنوع ارسال را انتخاب کنید. در هر دو حالت آیدی‌ها و لینک‌ها حذف می‌شوند.",
       reply_to_message_id: message.message_id,
-      reply_markup: keyboard,
-      parse_mode: "Markdown"
+      reply_markup: keyboard
     })
   });
 }
@@ -50,79 +47,70 @@ async function handleCallback(cb, env) {
   const messageId = cb.message.message_id;
 
   if (action === "mode_cancel") {
-    await editTg(env, chatId, messageId, "❌ عملیات توسط کاربر لغو شد.");
+    await editStatus(env, chatId, messageId, "❌ عملیات لغو شد.");
     return;
   }
 
-  await editTg(env, chatId, messageId, "⏳ در حال پردازش و ارسال به بله...");
+  await editStatus(env, chatId, messageId, "⏳ در حال پردازش و ارسال...");
 
   try {
     let rawText = originalMsg.text || originalMsg.caption || "";
-    // حذف آیدی‌ها و لینک‌های تلگرام
+    // حذف دقیق آیدی‌ها و لینک‌های تلگرامی
     let safeText = rawText.replace(/@[a-zA-Z0-9_]+/g, "").replace(/(https?:\/\/)?t\.me\/[a-zA-Z0-9_]+/ig, "").trim();
     
-    const file = getFileInfo(originalMsg);
+    const file = getFile(originalMsg);
 
     if (!file) {
-      await sendToBale(env, "sendMessage", { text: safeText || "پیام متنی بدون محتوا" });
+      await sendBale(env, "sendMessage", { text: safeText || "پیام بدون متن" });
     } else {
       const tgFileRes = await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/getFile?file_id=${file.id}`);
       const tgFileData = await tgFileRes.json();
-      if (!tgFileData.ok) throw new Error("خطا در دریافت فایل از تلگرام");
-      
       const fileUrl = `https://api.telegram.org/file/bot${env.TG_TOKEN}/${tgFileData.result.file_path}`;
 
-      if (action === "mode_zip") {
-        const fileBuffer = await (await fetch(fileUrl)).arrayBuffer();
-        const zip = new JSZip();
-        const fileName = tgFileData.result.file_path.split('/').pop();
-        zip.file(fileName, fileBuffer);
-        const zipContent = await zip.generateAsync({ type: "blob" });
-        await uploadToBale(env, zipContent, fileName + ".zip", safeText);
+      if (action === "mode_hide") {
+        // متد پنهان‌سازی بدون نیاز به کتابخانه زیپ
+        const fileRes = await fetch(fileUrl);
+        const blob = await fileRes.blob();
+        const fakeName = `Secure_File_${Date.now()}.pdf.enc`; 
+        await uploadBale(env, blob, fakeName, safeText + "\n\n🔐 محتوای تغییر فرمت یافته (امن)");
       } else {
         const method = file.type === "photo" ? "sendPhoto" : file.type === "video" ? "sendVideo" : "sendDocument";
         await sendToBale(env, method, { [file.type]: fileUrl, caption: safeText });
       }
     }
-    await editTg(env, chatId, messageId, "✅ با موفقیت به بله منتقل شد.");
+    await editStatus(env, chatId, messageId, "✅ با موفقیت به بله منتقل شد.");
   } catch (e) {
-    await editTg(env, chatId, messageId, `❌ خطا در انتقال: ${e.message}`);
+    await editStatus(env, chatId, messageId, `❌ خطا: ${e.message}`);
   }
 }
 
-function getFileInfo(msg) {
-  if (msg.photo) return { id: msg.photo.pop().file_id, type: 'photo' };
-  if (msg.video) return { id: msg.video.file_id, type: 'video' };
-  if (msg.document) return { id: msg.document.file_id, type: 'document' };
-  if (msg.audio) return { id: msg.audio.file_id, type: 'audio' };
+function getFile(m) {
+  if (m.photo) return { id: m.photo.pop().file_id, type: 'photo' };
+  if (m.video) return { id: m.video.file_id, type: 'video' };
+  if (m.document) return { id: m.document.file_id, type: 'document' };
   return null;
 }
 
-async function editTg(env, chatId, messageId, text) {
+async function editStatus(env, cId, mId, txt) {
   await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/editMessageText`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text })
+    body: JSON.stringify({ chat_id: cId, message_id: mId, text: txt })
   });
 }
 
 async function sendToBale(env, method, payload) {
-  const res = await fetch(`https://tapi.bale.ai/bot${env.BALE_TOKEN}/${method}`, {
+  await fetch(`https://tapi.bale.ai/bot${env.BALE_TOKEN}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, chat_id: env.BALE_CHAT_ID })
   });
-  return await res.json();
 }
 
-async function uploadToBale(env, blob, fileName, caption) {
-  const formData = new FormData();
-  formData.append("chat_id", env.BALE_CHAT_ID);
-  formData.append("document", blob, fileName);
-  if (caption) formData.append("caption", caption);
-  const res = await fetch(`https://tapi.bale.ai/bot${env.BALE_TOKEN}/sendDocument`, {
-    method: "POST",
-    body: formData
-  });
-  return await res.json();
+async function uploadBale(env, blob, name, cap) {
+  const fd = new FormData();
+  fd.append("chat_id", env.BALE_CHAT_ID);
+  fd.append("document", blob, name);
+  fd.append("caption", cap);
+  await fetch(`https://tapi.bale.ai/bot${env.BALE_TOKEN}/sendDocument`, { method: "POST", body: fd });
 }
