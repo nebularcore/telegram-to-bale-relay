@@ -1,6 +1,6 @@
 /**
- * PROJECT: TG-TO-BALE RELAY (SECURITY & AUTOMATION OPTIMIZED)
- * 4 ENV VARS REQUIRED: TG_TOKEN, BALE_TOKEN, BALE_CHAT_ID, ALLOWED_USER_ID
+ * PROJECT: TG-TO-BALE RELAY (DEBUG-PRO VERSION)
+ * 4 ENV VARS: TG_TOKEN, BALE_TOKEN, BALE_CHAT_ID, ALLOWED_USER_ID
  */
 
 export default {
@@ -13,100 +13,120 @@ export default {
 
       const msg = update.message;
 
-      // 1. امنیت: چک کردن آیدی کاربر (Strict Security)
+      // 1. امنیت: چک کردن آیدی کاربر
       if (String(msg.from.id) !== String(env.ALLOWED_USER_ID)) {
-        return new Response("Unauthorized Access", { status: 403 });
+        console.error(`Unauthorized access attempt from: ${msg.from.id}`);
+        return new Response("Unauthorized", { status: 403 });
       }
 
-      const file = getFileData(msg);
-      // 2. متن جایگزین در صورت خالی بودن پیام
       let rawText = msg.text || msg.caption || "";
-      if (!rawText.trim()) {
-        rawText = "📎 محتوای ارسالی بدون توضیح"; 
-      }
+      if (!rawText.trim()) rawText = "📎 محتوای بدون متن";
 
       const urlMatch = rawText.match(/https?:\/\/[^\s]+/i);
+      const file = getFileData(msg);
 
-      // اطلاع‌رسانی به کاربر تلگرام
+      // اطلاع‌رسانی اولیه به تلگرام
       const status = await sendTg(env, "sendMessage", {
         chat_id: msg.chat.id,
-        text: "⏳ در حال پردازش و انتقال خودکار...",
+        text: "🔄 شروع پردازش... لطفاً صبور باشید.",
         reply_to_message_id: msg.message_id
       });
       const statusData = await status.json();
       const statusId = statusData.result?.message_id;
 
-      // --- پردازش اصلی (بدون نیاز به انتخاب منو برای جلوگیری از مشکل نت) ---
       try {
         if (!file && urlMatch) {
-          // اگر لینک مستقیم بود
-          await handleLinkDownload(urlMatch[0], rawText, env);
+          // سناریو لینک خارجی
+          await handleLinkDownload(urlMatch[0], rawText, env, msg, statusId);
         } else if (file) {
-          // اگر فایل مستقیم تلگرامی بود
-          await handleFileTransfer(file, rawText, env);
+          // سناریو فایل تلگرامی
+          await handleFileTransfer(file, rawText, env, msg, statusId);
         } else {
-          // اگر فقط متن بود
+          // فقط متن
           await sendToBale(env, "sendMessage", { text: cleanText(rawText) });
         }
 
-        if (statusId) await editTg(env, msg.chat.id, statusId, "✅ با موفقیت منتقل شد.");
+        if (statusId) await editTg(env, msg.chat.id, statusId, "✅ عملیات با موفقیت انجام شد.");
       } catch (err) {
-        if (statusId) await editTg(env, msg.chat.id, statusId, `❌ خطا: ${err.message}`);
+        // گزارش دقیق خطا به کاربر در تلگرام
+        const errorMsg = `❌ خطا در مرحله: ${err.message}`;
+        if (statusId) await editTg(env, msg.chat.id, statusId, errorMsg);
+        console.error(errorMsg);
       }
 
     } catch (err) {
-      console.error("Critical Error:", err.message);
+      console.error("Critical Worker Error:", err.message);
     }
     return new Response("OK");
   }
 };
 
 /**
- * مدیریت انتقال فایل‌های مستقیم تلگرام
+ * مدیریت دانلود از لینک‌های مستقیم (مثل گیت‌هاب)
  */
-async function handleFileTransfer(file, text, env) {
+async function handleLinkDownload(url, text, env, msg, statusId) {
+  await editTg(env, msg.chat.id, statusId, "🌐 در حال اتصال به سرور مقصد (لینک خارجی)...");
+  
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*'
+      },
+      redirect: 'follow'
+    });
+  } catch (e) {
+    throw new Error(`ارتباط با مقصد برقرار نشد (احتمالاً به دلیل تحریم یا فیلتر مقصد) - جزئیات: ${e.message}`);
+  }
+
+  if (!response.ok) throw new Error(`سرور مقصد پاسخ ناموفق داد (Status: ${response.status})`);
+  
+  const size = parseInt(response.headers.get("content-length") || "0");
+  if (size > 50 * 1024 * 1024) throw new Error(`حجم فایل (${(size/1024/1024).toFixed(1)}MB) بیشتر از سقف ۵۰ مگابایت ورکر است.`);
+
+  await editTg(env, msg.chat.id, statusId, "📥 در حال دریافت فایل (Download)...");
+  const blob = await response.blob();
+
+  let fileName = url.split('/').pop().split('?')[0] || "downloaded_file";
+  if (url.toLowerCase().includes(".apk") || fileName.toLowerCase().endsWith(".apk")) {
+    fileName = fileName.replace(/\.apk$/i, ".zip");
+  }
+
+  await editTg(env, msg.chat.id, statusId, "📤 در حال آپلود به بله...");
+  await uploadToBale(env, blob, fileName, cleanText(text));
+}
+
+/**
+ * مدیریت فایل‌های مستقیم تلگرام
+ */
+async function handleFileTransfer(file, text, env, msg, statusId) {
+  await editTg(env, msg.chat.id, statusId, "🔍 در حال استخراج لینک فایل از تلگرام...");
+  
   const tgFileRes = await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/getFile?file_id=${file.id}`);
   const tgFileData = await tgFileRes.json();
-  if (!tgFileData.ok) throw new Error("فایل در تلگرام یافت نشد یا بسیار حجیم است.");
+  
+  if (!tgFileData.ok) throw new Error("تلگرام اجازه دسترسی به فایل را نداد (احتمالاً فایل بالای ۲۰ مگابایت است).");
 
   const fileUrl = `https://api.telegram.org/file/bot${env.TG_TOKEN}/${tgFileData.result.file_path}`;
   const fileName = tgFileData.result.file_path.split('/').pop();
   
+  await editTg(env, msg.chat.id, statusId, "📥 در حال دانلود فایل از سرور تلگرام...");
   const fileRes = await fetch(fileUrl);
   const blob = await fileRes.blob();
 
-  // امنیت و بای‌پس APK: تغییر نام خودکار برای جلوگیری از بلاک بله
   let finalName = fileName;
   if (fileName.toLowerCase().endsWith(".apk")) {
     finalName = fileName.replace(/\.apk$/i, ".zip");
   }
 
+  await editTg(env, msg.chat.id, statusId, "📤 در حال آپلود به بله...");
   await uploadToBale(env, blob, finalName, cleanText(text));
 }
 
 /**
- * دانلود از لینک‌های مستقیم (GitHub/Web)
+ * توابع کمکی (بدون تغییر)
  */
-async function handleLinkDownload(url, text, env) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error("لینک دانلود معتبر نیست.");
-  
-  const size = parseInt(response.headers.get("content-length") || "0");
-  if (size > 50 * 1024 * 1024) throw new Error("حجم فایل بالای ۵۰ مگابایت است.");
-
-  const blob = await response.blob();
-  let fileName = url.split('/').pop().split('?')[0] || "file_download";
-  
-  if (url.toLowerCase().includes(".apk") || fileName.toLowerCase().endsWith(".apk")) {
-    fileName = fileName.replace(/\.apk$/i, ".zip");
-  }
-  if (!fileName.includes('.')) fileName += ".dat";
-
-  await uploadToBale(env, blob, fileName, cleanText(text));
-}
-
-// --- ابزارهای کمکی ---
-
 function cleanText(text) {
   return text.replace(/@[a-zA-Z0-9_]+/g, "").replace(/(https?:\/\/)?(t\.me|telegram\.me)\/[^\s]+/ig, "").trim();
 }
@@ -127,7 +147,7 @@ async function uploadToBale(env, blob, name, cap) {
 
   const res = await fetch(`https://tapi.bale.ai/bot${env.BALE_TOKEN}/sendDocument`, { method: "POST", body: fd });
   const data = await res.json();
-  if (!data.ok) throw new Error(data.description);
+  if (!data.ok) throw new Error(`سایت بله فایل را نپذیرفت (Error: ${data.description})`);
 }
 
 async function sendToBale(env, method, payload) {
